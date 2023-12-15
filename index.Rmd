@@ -1,0 +1,169 @@
+---
+title: "MEJO570_Final"
+author: "Adam Rodgerson Bauer"
+date: "`r Sys.Date()`"
+output: html_document
+---
+# Introduction
+
+  When driving through Wake County, North Carolina, you may want to avoid Raleigh. So far in 2023, there have been 17,086 car crashes in the county. Out of these crashes, there were 17,069 crashes in Raleigh. That means that only 17 crashes occurred in other nearby cities. 
+  Mapping and analyzing data from the Wake County data portal tells us that the vast majority of car crashes, from January 1 to November 20 of 2023, have been in Raleigh. In the crash data, a crash can involve cars, pedestrians, and cyclists. Crashes are also reported no matter the severity. Not all of this crash data involves injury or deaths. In fact the vast majority of the data recorded does not involve a death.
+  Mapping the 2023 crash data onto Wake County, we see that the bubble of crashes are right in the middle of the county, with no outliers. After grouping crashes based on city, the true disparity in crash location is revealed. 
+  We can also see through mapping that main roads stand out in terms of crash density. To get a better understanding of trends in crash locations, crash data was grouped based on the type of road the crash happened on. The road classifications include Interstate, Local Street, US Rout, Driveway, and several others. 
+  When we think of where car crashes occur, we would likely think of the interstate; the crash data shows otherwise. Almost five times as many accidents in Wake County, NC occurred on local streets compared to interstates. Types of roads were then categorized by total count for each and labeled as either high, medium, or low crash count. Findings show that that Local Streets had the highest count of 11,068. Public Vehicular Areas were the next highest with 3,356, and Interstates were third. All other road classifications had either medium or low crash count.
+
+## Analysis
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+#Loading packages.
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(leaflet)
+library(lubridate)
+library(tidycensus)
+library(DT)
+
+#loading in data.
+crashes <- read_csv("data/Reported_Crash_Locations.csv",
+                    col_types = cols(
+                      OBJECTID = col_character(),
+                      key_crash = col_character(),
+                      DateOfCrash = col_datetime(
+                        format = "%Y/%m/%d %H:%M:%S%z"),
+                      UpdateDate = col_datetime(
+                        format = "%Y/%m/%d %H:%M:%S%z")
+                      )
+                    )
+#loading in spatial data.
+crash_locations <- sf::st_read("data/Reported_Crash_Locations/Reported_Crash_Locations.shp")
+```
+
+### Cleaning the Data
+```{r}
+crashes<- janitor::clean_names(crashes)
+```
+
+### Taking the Data for Coffee
+```{r}
+#Getting to know data.
+Hmisc::describe(crashes)
+```
+### Narrowing Down Data
+```{r}
+#There are 357 missing location datum. We will filter these out.
+crashes1 <- crashes%>%
+  filter(!is.na(location_latitude))
+
+#Using count() to see if the filter worked.
+count(crashes) - count(crashes1)
+#(It did).
+
+#I only want to focus on data from 2023.I also want to fix the timezone.
+crashes1$date_of_crash <- with_tz(crashes1$date_of_crash)
+head(crashes1$date_of_crash)
+
+recent_crashes <- crashes1%>%
+              filter(crash_date_year == "2023")
+
+#Adding the same filters to the spatial data.
+crash_locations_recent <- crash_locations%>%
+  filter(Crash_Da_6=="2023", !is.na(LocationLa))
+  
+```
+### Exploring Location
+```{r}
+
+#Loading in tidycensus and getting our API key.
+census_api_key("b088282105d9d3f4db72bd14cda713b71c066933", install= TRUE, overwrite = TRUE)
+
+#Creating an object 'Wakepop' that we can use to map Wake County.
+Wakepop <- get_acs(geography = "county", 
+              variables = c(population="B01003_001"),
+              state = "NC",
+              county = "Wake County",
+              geometry=T)
+
+#Plotting all of the crash locations in 2023 so that we can see trends in the crashes.
+ggplot() + geom_sf(data=crash_locations_recent, alpha=.2) + labs(title="Crash Patterns")
+
+
+#Creating a new table that will help us understand crash frequency based on City location.
+crash_frequency <- crash_locations_recent %>%
+  group_by(LocationCi) %>%
+  summarise(crash_count = n()) %>%
+  mutate(crash_frequency = crash_count / sum(crash_count))
+
+datatable(crash_frequency)
+
+#There are some typos for crashes in Raleigh.We'll filter these out.
+crash_frequency <- crash_frequency %>%
+  filter(!(LocationCi %in% c("RALA", "RALEGIH", "RALEIH", "RL",'RLAEIGH')))
+  
+#Creating a plot of crash count based on city.
+crash_frequency %>%
+  ggplot(aes(LocationCi, crash_count)) +
+  geom_col(aes(fill= crash_count,color=crash_count)) +
+  labs(title="Car Crashes by City",
+  y ="Crashes",
+  x="City") +
+  coord_flip()+
+  theme_minimal()
+
+#Plotting these densities on a map of Wake County.
+ggplot()+
+ geom_sf(data=Wakepop, color='white') +
+ geom_sf(data=crash_frequency, color='red',aes(alpha=crash_count),show.legend = F) +  labs(title="Crashes in Wake County")
+
+#The data covers much less of Wake County than expected.
+
+```
+```{r}
+#let's see what the data looks like on a map with roads.
+
+Wake_map <- leaflet(crash_locations_recent) %>% 
+  addProviderTiles(providers$CartoDB.DarkMatter) %>% 
+  setView(-78.638202, 35.779333, zoom = 11) %>%
+  addCircles(lng=~LocationLo, 
+             lat=~LocationLa, 
+             popup=~RoadClassi, 
+             weight = 3, 
+             radius=40,
+             color="red", 
+             stroke = TRUE, 
+             fillOpacity = 0.2)
+
+print(Wake_map)
+```
+### Exploring Road Classifications
+```{r}
+#Creating a new table that will group crashes based on road classification.
+roads <- crash_locations_recent %>%
+  group_by(RoadClassi) %>%
+  summarise(class_count = n()) %>%
+  mutate(crash_frequency = class_count / sum(class_count))
+
+#Ordering the crash road classifications
+roads <- arrange(roads, by=class_count, desc=F)
+
+#Adding labels to the crash road classifications
+crashes_categorized <- roads %>%
+  mutate(
+    count= case_when(
+      crash_frequency < .001 ~ 'Low',
+      crash_frequency >=.001 & crash_frequency < .1 ~ 'Medium',
+      crash_frequency >= .1 ~ 'High'
+    )
+  )
+
+datatable(crashes_categorized)
+
+```
+
+# Reflection
+  After analyzing the data there are a few things that could have skewed findings. Looking on the map of crashes overlayed on roads, I can see that many interstate crashes are labeled as local streets. This affects the finding that 5 times as many car crashes happen on local streets than interstates. The location labels for each crash also appear faulty after looking at the overlaid map. Crashes that appear outside of Raleigh are labeled as being in Raleigh. In fact, there are enough crashes located far outside of Raleigh that the findings would need to be clarified with whoever logged the data. If I had to guess, this is due to one of two things. Crashes could be labeled as “Raleigh” if a resident of Raleigh was involved in the crash. It could also be that travelers going to or coming from Raleigh were labeled as Raleigh crashes. For a story to be published on these crash location findings, more research would need to be done by contacting Wake County government workers.
+
